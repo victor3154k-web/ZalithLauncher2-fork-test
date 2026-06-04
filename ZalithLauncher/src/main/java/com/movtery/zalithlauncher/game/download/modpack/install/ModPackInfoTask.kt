@@ -106,7 +106,7 @@ abstract class ModPackInfoTask(
                     dispatcher = Dispatchers.IO,
                     title = context.getString(R.string.download_modpack_download)
                 ) { task ->
-                    val downloadTask = ModDownloader(modpackInfo.files)
+                    val downloadTask = ModDownloader(context, modpackInfo.files)
                     downloadTask.startDownload(task)
                 }
 

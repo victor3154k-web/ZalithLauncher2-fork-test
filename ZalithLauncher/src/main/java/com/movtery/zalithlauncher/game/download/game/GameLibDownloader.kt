@@ -18,6 +18,7 @@
 
 package com.movtery.zalithlauncher.game.download.game
 
+import android.content.Context
 import com.movtery.zalithlauncher.R
 import com.movtery.zalithlauncher.coroutine.Task
 import com.movtery.zalithlauncher.game.version.download.BaseMinecraftDownloader
@@ -26,6 +27,7 @@ import com.movtery.zalithlauncher.game.version.download.DownloadTask
 import com.movtery.zalithlauncher.game.version.download.parseTo
 import com.movtery.zalithlauncher.game.versioninfo.models.GameManifest
 import com.movtery.zalithlauncher.utils.file.formatFileSize
+import com.movtery.zalithlauncher.utils.network.AdaptiveDownloadCoordinator
 import com.movtery.zalithlauncher.utils.network.withSpeedReport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -36,17 +38,17 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * 游戏支持库下载器
  */
 class GameLibDownloader(
+    private val context: Context,
     private val downloader: BaseMinecraftDownloader,
     private val gameJson: String,
     private val maxDownloadThreads: Int = 64
@@ -65,6 +67,9 @@ class GameLibDownloader(
 
     /** 用于速率监测的已写入大小记录 */
     private val mSpeedReport = AtomicLong(0L)
+
+    /** 自适应下载协调器 */
+    private var activeCoordinator: AdaptiveDownloadCoordinator? = null
 
     /**
      * 计划下载所有支持库
@@ -91,35 +96,40 @@ class GameLibDownloader(
      */
     suspend fun download(task: Task) {
         isDownloadStarted = true
-        val tasks = allDownloadTasks.toList()
-        if (tasks.isNotEmpty()) {
-            //使用线程池进行下载
-            downloadAll(task, tasks, R.string.minecraft_download_downloading_game_files)
-            if (downloadFailedTasks.isNotEmpty()) {
-                downloadedFileCount.set(0)
-                totalFileCount.set(downloadFailedTasks.size.toLong())
-                downloadAll(task, downloadFailedTasks.toList(), R.string.minecraft_download_progress_retry_downloading_files)
+        val coordinator = AdaptiveDownloadCoordinator(context, maxConcurrency = maxDownloadThreads)
+        activeCoordinator = coordinator
+        try {
+            val tasks = allDownloadTasks.toList()
+            if (tasks.isNotEmpty()) {
+                //使用自适应并发进行下载
+                downloadAll(task, coordinator, tasks, R.string.minecraft_download_downloading_game_files)
+                if (downloadFailedTasks.isNotEmpty()) {
+                    downloadedFileCount.set(0)
+                    totalFileCount.set(downloadFailedTasks.size.toLong())
+                    downloadAll(task, coordinator, downloadFailedTasks.toList(), R.string.minecraft_download_progress_retry_downloading_files)
+                }
+                if (downloadFailedTasks.isNotEmpty()) throw DownloadFailedException()
             }
-            if (downloadFailedTasks.isNotEmpty()) throw DownloadFailedException()
-        }
 
-        //清除任务信息
-        task.updateProgress(1f, null)
+            //清除任务信息
+            task.updateProgress(1f, null)
+        } finally {
+            activeCoordinator = null
+        }
     }
 
     private suspend fun downloadAll(
         task: Task,
+        coordinator: AdaptiveDownloadCoordinator,
         tasks: List<DownloadTask>,
         taskMessageRes: Int
     ) = withContext(Dispatchers.IO) {
         coroutineScope {
             downloadFailedTasks.clear()
 
-            val semaphore = Semaphore(maxDownloadThreads)
-
             val downloadJobs = tasks.map { downloadTask ->
                 launch {
-                    semaphore.withPermit {
+                    coordinator.withPermit {
                         downloadTask.download()
                     }
                 }
@@ -136,7 +146,7 @@ class GameLibDownloader(
                         downloadedFileCount.get(), totalFileCount.get(), //文件个数
                         formatFileSize(currentFileSize), formatFileSize(totalFileSize) //文件大小
                     )
-                    delay(100)
+                    delay(100.milliseconds)
                 }
             }
 
@@ -181,6 +191,7 @@ class GameLibDownloader(
                 isDownloadable = isDownloadable,
                 onDownloadFailed = { task ->
                     downloadFailedTasks.add(task)
+                    activeCoordinator?.onFailure()
                 },
                 onFileDownloadedSize = { downloadedSize ->
                     downloadedFileSize.addAndGet(downloadedSize)
@@ -188,6 +199,7 @@ class GameLibDownloader(
                 },
                 onFileDownloaded = {
                     downloadedFileCount.incrementAndGet()
+                    activeCoordinator?.onSuccess(size)
                 }
             )
         )

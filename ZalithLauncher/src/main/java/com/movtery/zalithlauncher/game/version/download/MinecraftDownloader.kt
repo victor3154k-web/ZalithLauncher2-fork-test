@@ -25,6 +25,7 @@ import com.movtery.zalithlauncher.game.versioninfo.models.GameManifest
 import com.movtery.zalithlauncher.game.versioninfo.models.VersionManifest
 import com.movtery.zalithlauncher.utils.file.formatFileSize
 import com.movtery.zalithlauncher.utils.logging.Logger
+import com.movtery.zalithlauncher.utils.network.AdaptiveDownloadCoordinator
 import com.movtery.zalithlauncher.utils.network.withSpeedReport
 import com.movtery.zalithlauncher.utils.string.getMessageOrToString
 import kotlinx.coroutines.CancellationException
@@ -36,13 +37,12 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.time.Duration.Companion.milliseconds
 
 private const val TAG = "MinecraftDownloader"
 
@@ -54,7 +54,7 @@ private const val TAG = "MinecraftDownloader"
  * @param onCompletion 完成安装
  * @param onError 安装出现异常，将错误反馈给用户
  * @param onThrowable 安装出现异常，需直接处理异常时 将覆盖 onError
- * @param maxDownloadThreads 最大下载线程数
+ * @param maxDownloadThreads 最大下载线程数（自适应并发上限，非固定值）
  */
 class MinecraftDownloader(
     private val context: Context,
@@ -80,6 +80,9 @@ class MinecraftDownloader(
     /** 用于速率监测的已写入大小记录 */
     private val mSpeedReport = AtomicLong(0L)
 
+    /** 自适应下载协调器 */
+    private var activeCoordinator: AdaptiveDownloadCoordinator? = null
+
     private fun getTaskMessage(download: Int, verify: Int): Int =
         when (mode) {
             DownloadMode.DOWNLOAD -> download
@@ -97,29 +100,36 @@ class MinecraftDownloader(
             id = DOWNLOADER_TAG,
             dispatcher = Dispatchers.Default,
             task = { task ->
-                task.updateProgress(-1f, getTaskMessage(R.string.minecraft_download_stat_download_task, R.string.minecraft_download_stat_verify_task))
-                if (mode == DownloadMode.DOWNLOAD) {
-                    progressNewDownloadTasks(clientName, clientVersionsDir)
-                } else {
-                    val jsonFile = downloader.getVersionJsonPath(customName).takeIf { it.canRead() } ?: throw IOException("Version $customName JSON file is unreadable.")
-                    val jsonText = jsonFile.readText()
-                    val gameManifest = jsonText.parseTo(GameManifest::class.java)
-                    progressDownloadTasks(gameManifest, clientName)
-                }
-
-                if (allDownloadTasks.isNotEmpty()) {
-                    downloadAll(task, allDownloadTasks, getTaskMessage(R.string.minecraft_download_downloading_game_files, R.string.minecraft_download_verifying_and_repairing_files))
-                    if (downloadFailedTasks.isNotEmpty()) {
-                        downloadedFileCount.set(0)
-                        totalFileCount.set(downloadFailedTasks.size.toLong())
-                        downloadAll(task, downloadFailedTasks.toList(), getTaskMessage(R.string.minecraft_download_progress_retry_downloading_files, R.string.minecraft_download_progress_retry_verifying_files))
+                // 创建自适应下载协调器，整个下载+重试阶段共用
+                val coordinator = AdaptiveDownloadCoordinator(context, maxConcurrency = maxDownloadThreads)
+                activeCoordinator = coordinator
+                try {
+                    task.updateProgress(-1f, getTaskMessage(R.string.minecraft_download_stat_download_task, R.string.minecraft_download_stat_verify_task))
+                    if (mode == DownloadMode.DOWNLOAD) {
+                        progressNewDownloadTasks(clientName, clientVersionsDir)
+                    } else {
+                        val jsonFile = downloader.getVersionJsonPath(customName).takeIf { it.canRead() } ?: throw IOException("Version $customName JSON file is unreadable.")
+                        val jsonText = jsonFile.readText()
+                        val gameManifest = jsonText.parseTo(GameManifest::class.java)
+                        progressDownloadTasks(gameManifest, clientName)
                     }
-                    if (downloadFailedTasks.isNotEmpty()) throw DownloadFailedException()
-                }
-                //清除任务信息
-                task.updateProgress(1f, null)
 
-                onCompletion(task)
+                    if (allDownloadTasks.isNotEmpty()) {
+                        downloadAll(task, coordinator, allDownloadTasks, getTaskMessage(R.string.minecraft_download_downloading_game_files, R.string.minecraft_download_verifying_and_repairing_files))
+                        if (downloadFailedTasks.isNotEmpty()) {
+                            downloadedFileCount.set(0)
+                            totalFileCount.set(downloadFailedTasks.size.toLong())
+                            downloadAll(task, coordinator, downloadFailedTasks.toList(), getTaskMessage(R.string.minecraft_download_progress_retry_downloading_files, R.string.minecraft_download_progress_retry_verifying_files))
+                        }
+                        if (downloadFailedTasks.isNotEmpty()) throw DownloadFailedException()
+                    }
+                    //清除任务信息
+                    task.updateProgress(1f, null)
+
+                    onCompletion(task)
+                } finally {
+                    activeCoordinator = null
+                }
             },
             onError = { e ->
                 Logger.error(TAG, "Failed to download Minecraft!", e)
@@ -143,17 +153,16 @@ class MinecraftDownloader(
 
     private suspend fun downloadAll(
         task: Task,
+        coordinator: AdaptiveDownloadCoordinator,
         tasks: List<DownloadTask>,
         taskMessageRes: Int
     ) = withContext(Dispatchers.IO) {
         coroutineScope {
             downloadFailedTasks.clear()
 
-            val semaphore = Semaphore(maxDownloadThreads)
-
             val downloadJobs = tasks.map { downloadTask ->
                 launch {
-                    semaphore.withPermit {
+                    coordinator.withPermit {
                         downloadTask.download()
                     }
                 }
@@ -170,7 +179,7 @@ class MinecraftDownloader(
                         downloadedFileCount.get(), totalFileCount.get(), //文件个数
                         formatFileSize(currentFileSize), formatFileSize(totalFileSize) //文件大小
                     )
-                    delay(100)
+                    delay(100.milliseconds)
                 }
             }
 
@@ -289,6 +298,7 @@ class MinecraftDownloader(
                 isDownloadable = isDownloadable,
                 onDownloadFailed = { task ->
                     downloadFailedTasks.add(task)
+                    activeCoordinator?.onFailure()
                 },
                 onFileDownloadedSize = { downloadedSize ->
                     downloadedFileSize.addAndGet(downloadedSize)
@@ -296,6 +306,7 @@ class MinecraftDownloader(
                 },
                 onFileDownloaded = {
                     downloadedFileCount.incrementAndGet()
+                    activeCoordinator?.onSuccess(size)
                 }
             )
         )

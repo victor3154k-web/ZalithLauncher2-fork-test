@@ -20,6 +20,7 @@ package com.movtery.zalithlauncher.game.download.game.forge
 
 import com.google.gson.JsonObject
 import com.google.gson.reflect.TypeToken
+import com.movtery.zalithlauncher.context.GlobalContext
 import com.movtery.zalithlauncher.coroutine.Task
 import com.movtery.zalithlauncher.game.addons.mirror.mapBMCLMirrorUrls
 import com.movtery.zalithlauncher.game.download.game.GameLibDownloader
@@ -142,6 +143,7 @@ private suspend fun analyseNewForge(
 
     //计划下载 install_profile.json 内的所有支持库
     val libDownloader = GameLibDownloader(
+        context = GlobalContext,
         downloader = downloader,
         gameJson = installProfile.toString()
     )

@@ -258,6 +258,7 @@ private suspend fun installOldForge(
     //判断是否需要补全 Forge 支持库
     versionInfo?.let { info ->
         val libDownloader = GameLibDownloader(
+            context = GlobalContext,
             downloader = downloader,
             gameJson = GSON.toJson(info)
         )

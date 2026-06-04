@@ -18,11 +18,13 @@
 
 package com.movtery.zalithlauncher.game.download.modpack.install
 
+import android.content.Context
 import com.movtery.zalithlauncher.R
 import com.movtery.zalithlauncher.coroutine.Task
 import com.movtery.zalithlauncher.game.version.download.DownloadFailedException
 import com.movtery.zalithlauncher.utils.file.formatFileSize
 import com.movtery.zalithlauncher.utils.logging.Logger
+import com.movtery.zalithlauncher.utils.network.AdaptiveDownloadCoordinator
 import com.movtery.zalithlauncher.utils.network.downloadFromMirrorListSuspend
 import com.movtery.zalithlauncher.utils.network.isInterruptedIOException
 import com.movtery.zalithlauncher.utils.network.withSpeedReport
@@ -35,18 +37,18 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.time.Duration.Companion.milliseconds
 
 private const val TAG = "ModDownloader"
 
 /**
- * 整合包模组下载器，多线程并行下载所有模组
+ * 整合包模组下载器，使用自适应并发进行多线程下载
  */
 class ModDownloader(
+    private val context: Context,
     val mods: List<ModFile>,
     private val maxDownloadThreads: Int = 64
 ) {
@@ -59,7 +61,9 @@ class ModDownloader(
     private val mSpeedReport = AtomicLong(0L)
 
     suspend fun startDownload(task: Task) {
+        val coordinator = AdaptiveDownloadCoordinator(context, maxConcurrency = maxDownloadThreads)
         downloadAll(
+            coordinator = coordinator,
             task = task,
             taskMessageRes = R.string.download_modpack_download_mods
         )
@@ -67,6 +71,7 @@ class ModDownloader(
             downloadedFileCount.set(0)
             downloadedFileSize.set(0L)
             downloadAll(
+                coordinator = coordinator,
                 task = task,
                 tasks = downloadFailedTasks.toList(),
                 taskMessageRes = R.string.download_modpack_download_mods_retry
@@ -78,6 +83,7 @@ class ModDownloader(
     }
 
     private suspend fun downloadAll(
+        coordinator: AdaptiveDownloadCoordinator,
         task: Task,
         tasks: List<ModFile> = mods,
         taskMessageRes: Int,
@@ -86,11 +92,9 @@ class ModDownloader(
         coroutineScope {
             downloadFailedTasks.clear()
 
-            val semaphore = Semaphore(maxDownloadThreads)
-
             val downloadJobs = tasks.map { mod ->
                 launch {
-                    semaphore.withPermit {
+                    coordinator.withPermit {
                         suspend fun download(file: ModFile) {
                             val urls = file.downloadUrls!!
                             val outputFile = file.outputFile!!
@@ -105,10 +109,12 @@ class ModDownloader(
                                 }
                                 //下载成功
                                 downloadedFileCount.incrementAndGet()
+                                coordinator.onSuccess(outputFile.length())
                             }.onFailure { e ->
                                 if (e is CancellationException) throw e
                                 Logger.error(TAG, "Download failed: ${outputFile.absolutePath}, urls: ${urls.joinToString(", ")}", e)
                                 downloadFailedTasks.add(mod)
+                                coordinator.onFailure()
                             }
                         }
 
@@ -123,6 +129,7 @@ class ModDownloader(
                             } catch (e: IOException) {
                                 if (!e.isInterruptedIOException()) {
                                     downloadFailedTasks.add(mod)
+                                    coordinator.onFailure()
                                 }
                                 return@withPermit
                             }
@@ -146,7 +153,7 @@ class ModDownloader(
                         downloadedFileCount.get(), totalFileCount,
                         formatFileSize(downloadedFileSize.get())
                     )
-                    delay(100)
+                    delay(100.milliseconds)
                 }
             }
 
