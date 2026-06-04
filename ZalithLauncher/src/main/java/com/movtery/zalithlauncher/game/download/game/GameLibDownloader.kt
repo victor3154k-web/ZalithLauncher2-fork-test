@@ -18,7 +18,6 @@
 
 package com.movtery.zalithlauncher.game.download.game
 
-import android.content.Context
 import com.movtery.zalithlauncher.R
 import com.movtery.zalithlauncher.coroutine.Task
 import com.movtery.zalithlauncher.game.version.download.BaseMinecraftDownloader
@@ -48,7 +47,6 @@ import kotlin.time.Duration.Companion.milliseconds
  * 游戏支持库下载器
  */
 class GameLibDownloader(
-    private val context: Context,
     private val downloader: BaseMinecraftDownloader,
     private val gameJson: String,
     private val maxDownloadThreads: Int = 64
@@ -96,7 +94,7 @@ class GameLibDownloader(
      */
     suspend fun download(task: Task) {
         isDownloadStarted = true
-        val coordinator = AdaptiveDownloadCoordinator(context, maxConcurrency = maxDownloadThreads)
+        val coordinator = AdaptiveDownloadCoordinator(maxConcurrency = maxDownloadThreads)
         activeCoordinator = coordinator
         try {
             val tasks = allDownloadTasks.toList()

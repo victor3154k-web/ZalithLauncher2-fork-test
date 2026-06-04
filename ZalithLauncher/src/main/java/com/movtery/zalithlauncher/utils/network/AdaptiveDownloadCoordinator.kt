@@ -18,9 +18,6 @@
 
 package com.movtery.zalithlauncher.utils.network
 
-import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import com.movtery.zalithlauncher.utils.logging.Logger
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -40,7 +37,6 @@ private const val HARD_CONCURRENCY_CAP = 64
  * @param successThreshold 连续成功阈值，超过此值后允许扩容
  */
 class AdaptiveDownloadCoordinator(
-    private val context: Context,
     maxConcurrency: Int = 64,
     private val minConcurrency: Int = 2,
     private val failureThreshold: Int = 3,
@@ -53,13 +49,8 @@ class AdaptiveDownloadCoordinator(
      * (并发比例, 阈值倍数) 两者均相对于 [maxConcurrency]
      */
     private val concurrencyTemplates = listOf(
-        0.125   to 0.3,
-        0.1875  to 1.5,
-        0.25    to 2.5,
-        0.375   to 4.0,
-        0.5625  to 6.0,
-        0.75    to 8.0,
-        1.0     to 10.0,
+        0.5   to 0.125,
+        1.0   to 0.25,
     )
 
     /** 阶段性并发配置(扩容阈值任务数, 并发数) */
@@ -169,29 +160,10 @@ class AdaptiveDownloadCoordinator(
     }
 
     /**
-     * 根据当前网络类型决定初始并发数
-     */
-    private fun initialConcurrency(): Int {
-        val caps = runCatching {
-            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-            cm?.getNetworkCapabilities(cm.activeNetwork)
-        }.getOrNull()
-
-        return when {
-            caps == null -> minConcurrency
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> 4
-            //使用流量，从最小并发数起步
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> minConcurrency
-            else -> minConcurrency
-        }
-    }
-
-    /**
      * 根据 [maxConcurrency] 动态生成阶段配置：(扩容所需任务数, 并发数)
      */
     private fun buildPhaseConfig(): List<Pair<Int, Int>> {
-        val init = initialConcurrency()
+        val init = (maxConcurrency / 4).coerceIn(4, maxConcurrency)
         val max = maxConcurrency
 
         val phases = mutableListOf(0 to init)

@@ -101,7 +101,7 @@ class MinecraftDownloader(
             dispatcher = Dispatchers.Default,
             task = { task ->
                 // 创建自适应下载协调器，整个下载+重试阶段共用
-                val coordinator = AdaptiveDownloadCoordinator(context, maxConcurrency = maxDownloadThreads)
+                val coordinator = AdaptiveDownloadCoordinator(maxConcurrency = maxDownloadThreads)
                 activeCoordinator = coordinator
                 try {
                     task.updateProgress(-1f, getTaskMessage(R.string.minecraft_download_stat_download_task, R.string.minecraft_download_stat_verify_task))

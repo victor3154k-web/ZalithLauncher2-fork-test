@@ -18,7 +18,6 @@
 
 package com.movtery.zalithlauncher.game.download.game.fabric
 
-import com.movtery.zalithlauncher.context.GlobalContext
 import com.movtery.zalithlauncher.coroutine.Task
 import com.movtery.zalithlauncher.game.download.game.GameLibDownloader
 import com.movtery.zalithlauncher.game.version.download.BaseMinecraftDownloader
@@ -35,7 +34,6 @@ fun getFabricLikeCompleterTask(
         id = FABRIC_LIKE_COMPLETER_ID,
         task = { task ->
             val libDownloader = GameLibDownloader(
-                context = GlobalContext,
                 downloader = downloader,
                 gameJson = tempVersionJson.readText()
             )

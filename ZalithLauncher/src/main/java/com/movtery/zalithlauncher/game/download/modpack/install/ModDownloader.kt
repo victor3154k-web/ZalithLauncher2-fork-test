@@ -18,7 +18,6 @@
 
 package com.movtery.zalithlauncher.game.download.modpack.install
 
-import android.content.Context
 import com.movtery.zalithlauncher.R
 import com.movtery.zalithlauncher.coroutine.Task
 import com.movtery.zalithlauncher.game.version.download.DownloadFailedException
@@ -48,7 +47,6 @@ private const val TAG = "ModDownloader"
  * 整合包模组下载器，使用自适应并发进行多线程下载
  */
 class ModDownloader(
-    private val context: Context,
     val mods: List<ModFile>,
     private val maxDownloadThreads: Int = 64
 ) {
@@ -61,7 +59,7 @@ class ModDownloader(
     private val mSpeedReport = AtomicLong(0L)
 
     suspend fun startDownload(task: Task) {
-        val coordinator = AdaptiveDownloadCoordinator(context, maxConcurrency = maxDownloadThreads)
+        val coordinator = AdaptiveDownloadCoordinator(maxConcurrency = maxDownloadThreads)
         downloadAll(
             coordinator = coordinator,
             task = task,
